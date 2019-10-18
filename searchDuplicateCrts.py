@@ -40,10 +40,12 @@ So The PLAN:
 	dups.write_csv()
 """
 import json
-import io
+from io import StringIO
 import ijson.backends.yajl2 as ijson # WAY faster for importing and working with jsons (https://pypi.org/project/ijson/)
 import sys
 import pandas as pd
+from pandas.io.json import json_normalize
+from functools import reduce
 import timeit #testing purposes
 import timing #for complete script timings. Taken from an answer on stackoverflow years ago. NOT MINE
 
@@ -167,6 +169,126 @@ def main(argv):
 	dups=certsDF.duplicated(subset='data.leaf_cert.fingerprint')
 	dups=certsDF[dups]
 	print(dups)
+	'''
+def usingPANDAS(file):
+	#set the size of the information to process at any time, so we're not sending it to memory
+	chunks=[] #for storing all the chunks so that we can send them all to a merged dataframe later.
+	certs=[]
+	#PANDAS has a jsonreader that works with chunks! AND it works well with line-delimitors
+	timing.log("Starting reading-in")
+	reader=pd.read_json((file),lines=True, chunksize=100000, dtype=False) #so it doesn't infer the type?
+	# print(reader)
+	# chunks=(flattenDict(chunk.to_dict(), "",{}) for chunk in reader)
+	# chunks=[chunk for chunk in reader]
+	# certs.append([pd.DataFrame(json_normalize(x)) for x in chunks['data']])
+	# certs.append([pd.DataFrame(json_normalize(x)) for x in chunk['data'] for chunk in reader])
+	# certsDF = pd.concat([pd.DataFrame(json_normalize(x)) for x in chunk['data']],ignore_index=True)
+	timing.log("Starting chunk processing")
+	for chunk in reader:
+		# print(chunk)
+		# columns=chunk.columns
+		new=chunk['data'].apply(json.dumps)
+		new=json_normalize(new.apply(json.loads))
+		# new=chunk['data'].apply(flattenDict, args={'',{}})
+		# print("new: \n", new)
+		# chunk=pd.concat([chunk, new], axis=1)#.to_dict()
+		# chunk.merge(new, how="outer")
+		# chunk=chunk.update(new)
+		for column in chunk.columns:
+			if "data" is not column:
+				new[column]=chunk[column]
+		del new['data'] #remove data now because dictionary screws things up later.
+		# print("type(new): ", type(new))
+		# print("data in set(new.columns): ", "data" in set(new.columns))
+		# print("chunk.keys: ", chunk.keys())
+		# print("chunk.columns: ", chunk.columns)
+		# print("chunk: ", chunk)
+		# print("new: ", new)
+		# print("new.columns: ", new.columns)
+		# for column in columns:
+		# 	# chunk[column]=eval('json_normalize(chunk.{}.apply(json.loads))'.format(column))
+		# 	# chunk.merge(chunk, eval('json_normalize(chunk.{}.apply(json.loads))'.format(column)))
+		# 	# print(type(chunk[column]))
+		# 	# if isinstance(chunk[column], dict):
+		# 	# 	new=pd.Dataframe(chunk[column])
+		# 	# 	chunk=pd.concat([chunk, new], axis=1)
+		# 	# 	print("chunk columns: ", chunk.columns)
+		# 	# try:
+		# 	# print(type(chunk[column]))
+		# 	# print(chunk[column])
+		# 	# # print(chunk[column].to_dict().keys())
+		# 	# # raise("break")
+		# 	# new=pd.DataFrame(chunk[column].values)#to_dict())
+		# 	# # print(new.columns)
+		# 	# chunk=pd.concat([chunk, new], axis=1)
+		# 	# print("chunk columns: ", chunk.columns)
+
+		# 	# new=pd.value_counts(chunk[column])
+		# 	new=chunk[column].apply(pd.DataFrame.from_dict)
+		# 	print("new: ", new)
+		# 	chunk=pd.concat([chunk, new], axis=1)
+
+		# 	# except:
+		# 		# raise(Error)
+
+		# chunks.append(chunk)
+		# print("new: \n", new )
+		# new.to_csv("temp_new.csv")
+		chunks.append(new)
+		# timing.log("just finish a loop") #THIS SHOWS IT TAKES ~.06seconds to run a loop. 
+
+		# certs=[pd.concat([pd.DataFrame(json_normalize(x)) for x in chunk['data']])]
+		# print(chunk)
+		# chunks.append(chunk)
+		# chunks.append(certs)
+	# print(certs[1])
+
+		
+	"""		
+	NEW plan. Clearly the chunking is a good idea, but we still have to deal with the json strings. So let's try to normalize those AFTER. If the column contains strings that are valid jsons, convert them.
+	Nope. Not working. We can't treat them like jsons, because they're going in as dictionaries. They're not acting like dictionaries, though. The data column is a series. I want to be able to extract the dictionaries and then attach them to the rest of the dataframe, so we preserve any columns that aren't the 'data'. 
+	"""
+		
+
+	#now make a major dataframe 
+	# certsDF=reduce(lambda x, y: pd.merge(x, y), chunks)
+	# print(type(chunks))
+	# print(len(chunks))
+	# print("data in set(new.columns): ", "data" in set(new.columns))
+	# print("set(new.columns): ", set(new.columns))
+	# certsDF=pd.DataFrame(chunks)
+	timing.log("Starting Concat")
+	certsDF=pd.concat(chunks, ignore_index=True, sort=True)
+	# certsDF=reduce(lambda x, y: pd.merge(x, y), chunks)
+	# print(certsDF.shape)
+	# certsDF=pd.DataFrame(certs)
+	# print(certsDF.columns)
+	timing.log("finding dups")
+	dups=certsDF.duplicated(subset='leaf_cert.fingerprint')
+	dups=certsDF[dups]
+	timing.log("writing dups to file")
+	dups.to_csv("duplicates_PANDAS.csv")
+
+	'''
+	python -m timeit "from searchDuplicateCrts import usingPANDAS; usingPANDAS('/Users/esbailin/Desktop/recordedFuture/bailin/ctl_records_subsample')" --> 10377 rows
+
+	Timeit for 100 chunks: 1 loop, best of 5: 6.7 sec per loop
+	Timeit for 1000 chunks: 1 loop, best of 5: 5.73 sec per loop
+	Timeit for 10000 chunks: 1 loop, best of 5: 5.85 sec per loop
+
+	python -m timeit "from searchDuplicateCrts import usingPANDAS; usingPANDAS('/Users/esbailin/Desktop/recordedFuture/bailin/subsample2.dms')" --> 22256
+	
+	Timeit for 1000 chunks: 1 loop, best of 5: 12.5 sec per loop
+	Timeit for 10000 chunks: 1 loop, best of 5: 13.1 sec per loop
+	Timeit for 100000 chunks: 1 loop, best of 5: 13.7 sec per loop
+
+	python -m timeit "from searchDuplicateCrts import usingPANDAS; usingPANDAS('/Users/esbailin/Desktop/recordedFuture/bailin/subsample3.dms')" --> 125225
+
+	Timeit for 1000 chunks: 1 loop, best of 5: 75.1 sec per loop
+	Timeit for 10000 chunks: 1 loop, best of 5: 71.2 sec per loop #HUGELY! BETTER THAN PREVIOUS METHODS!!!
+	Timeit for 100000 chunks: 1 loop, best of 5: 94.2 sec per loop #So clearly, less than 100000
+
+	:::> With these results, it seems that 100000 is sufficient for the huge file, FOR now. I should run timeits on the huge file, but I don't know if I have time for that. I'll just use the embedded timing method to calculate how long it takes to run the big one. Here's to hoping for less than 2hours! 
 	'''
 
 
