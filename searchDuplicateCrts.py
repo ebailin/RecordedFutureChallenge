@@ -41,13 +41,21 @@ So The PLAN:
 """
 import json
 from io import StringIO
+from os import path, getcwd, mkdir
 import ijson.backends.yajl2 as ijson # WAY faster for importing and working with jsons (https://pypi.org/project/ijson/)
 import sys
 import pandas as pd
 from pandas.io.json import json_normalize
 from functools import reduce
+from glob import glob
 import timeit #testing purposes
 import timing #for complete script timings. Taken from an answer on stackoverflow years ago. NOT MINE
+import dask.dataframe as dd
+# from multiprocessing import cpu_count, Queues #so I can tell how many partitions 
+# import multiprocessing as mp
+# import pandas.util.testing as pdt #to confirm the multiprocessing worked
+
+metas={'cert_index': 'int64', 'cert_link': 'object', 'chain': 'object', 'seen': 'float64', 'update_type': 'object', 'leaf_cert.all_domains': 'object', 'leaf_cert.as_der': 'object', 'leaf_cert.extensions.authorityInfoAccess': 'object', 'leaf_cert.extensions.authorityKeyIdentifier': 'object', 'leaf_cert.extensions.basicConstraints':'object', 'leaf_cert.extensions.certificatePolicies': 'object', 'leaf_cert.extensions.ctlSignedCertificateTimestamp': 'object', 'leaf_cert.extensions.extendedKeyUsage': 'object', 'leaf_cert.extensions.keyUsage': 'object', 'leaf_cert.extensions.subjectAltName': 'object', 'leaf_cert.extensions.subjectKeyIdentifier': 'object', 'leaf_cert.fingerprint': 'object', 'leaf_cert.not_after': 'int64', 'leaf_cert.not_before': 'int64', 'leaf_cert.serial_number': 'object', 'leaf_cert.subject.C': 'object', 'leaf_cert.subject.CN': 'object', 'leaf_cert.subject.L': 'object', 'leaf_cert.subject.O': 'object', 'leaf_cert.subject.OU': 'object', 'leaf_cert.subject.ST': 'object', 'leaf_cert.subject.aggregated': 'object', 'source.name': 'object', 'source.url': 'object', 'leaf_cert.extensions.ctlPoisonByte': 'bool', 'leaf_cert.extensions.crlDistributionPoints': 'object', 'leaf_cert.extensions.extra': 'object', 'leaf_cert.extensions.issuerAltName': 'object'}
 
 '''
 HELPERS
@@ -78,7 +86,6 @@ def flattenDict(current, key, result):
 	# 	flattenDict(sorted(x for x in current), key, result)
 	else:
 		result[key] = current
-
 	# print("result: ", result)
 	return result
 
@@ -169,7 +176,151 @@ def main(argv):
 	dups=certsDF.duplicated(subset='data.leaf_cert.fingerprint')
 	dups=certsDF[dups]
 	print(dups)
+
 	'''
+"""
+'''
+With dask proving to be just too much work to get working in such a short time, I'm going to try readInOutIn with multiprocessing
+
+Plan: read in with Pandas and chunks --> put the chunks into a queue (or the like)--> have workers do the normalizing --> create a new dataframe at the end
+'''
+#THIS IS MODIFIED FROM https://stackoverflow.com/questions/26784164/pandas-multiprocessing-apply
+def process_apply(x):
+	# new=x['data'].apply(json.dumps)
+	# new=json_normalize(new.apply(json.loads))
+	if x == "data":
+		return json_normalize(json.loads(json.dumps(x)))
+	return x
+
+def process(df):
+	return df.apply(process_apply, axis=1)
+
+def usingMultiProces(file):
+	#read in with pandas
+	readers=pd.read_json((file),lines=True, chunksize=100000, dtype=False)
+	q=Queue(100) #max size?
+	for reader in readers:
+		q.put(reader)
+
+"""
+
+'''
+As I was thinking about getting readInOutIn to work, it hit me that I've been thinking about this a consecutive manner. There's only so far I can go with it. I need to think about serializing, ergo, THREADING! 
+	
+I know that reading in a file shouldn't be threaded, but given that that's not the part that takes forever (based on my previous attempts). That part is the processing the chunks (i.e. the normalizing) portion. So I can thread that. 
+
+Just as I was about to add threading to my usingPANDAS framework, I decided to google adding threading to PANDAS. This lead to DASK! Rather than reinventing the wheel, I'm using it. https://docs.dask.org/en/latest/dataframe-api.html
+
+'''
+def usingDASK(file):
+	chunks=[]
+	timing.log("Starting reading-in")
+
+	reader=dd.read_json(file, lines=True, blocksize=2**22, meta={'data': object, 'message_type':object})
+	# t=reader['data'].map_partitions(lambda df: df.apply(lambda x: x.apply(flattenDict, key='', result={}))).to_bag()
+	# t=reader.map_partitions(lambda df: df['data'].apply(flattenDict, key='', result={})).to_bag()
+	datas=reader['data'].map_partitions(lambda df: df.apply((lambda row: flattenDict(row, '', {})))).to_bag()
+	new=datas.to_dataframe()
+	new['message_type']=reader['message_type']
+	new=new.compute()
+	dups=new.duplicated(subset='leaf_cert.fingerprint')
+	dups=new[dups]
+	dups.to_csv("duplicates_DASK.csv")
+
+	'''
+	python -m timeit "from searchDuplicateCrts import usingDASK; usingDASK('/Users/esbailin/Desktop/future/bailin/subsample2.dms')"
+	
+	Timeit for blocksize: 2**28: 1 loop, best of 5: 10.9 sec per loop
+	Timeit for blocksize: 2**30: 1 loop, best of 5: 12.1 sec per loop (2**30 is my psutil.virtual_memory().total / psutil.cpu_count())
+
+	python -m timeit "from searchDuplicateCrts import usingDASK; usingDASK('/Users/esbailin/Desktop/future/bailin/subsample3.dms')"
+
+	Timeit for blocksize: 2**30: That was a mistake. It's definitely too big! Ditto for 2**28
+	Timeit for blocksize: 3**26: 1 loop, best of 5: 53.4 sec per loop <--definitely faster than any other method! 
+	Timeit for blocksize: 2**24: 1 loop, best of 5: 37.8 sec per loop <--GOING WITH 2**24!
+	Timeit for blocksize: 2**22: 1 loop, best of 5: 43.1 sec per loop
+
+
+	'''
+
+
+
+
+def normalizeColumns(series):
+	new=series.map_partitions(apply(json_dumps))
+	new.map_partitions(apply(json_loads))
+	return(new.map_partitions(apply(json_normalize)))
+	# new=data.apply(json.dumps)
+	# temp=json.dumps(data)
+	# temp=json.loads(temp)
+	# temp=json_normalize(temp)
+	# return temp
+	# new=dataframe['data'].apply(json.dumps)
+	# dd.from_pandas(dataframe['data']).map_partitions(lambda df: df.apply(json.dumps)).compute(scheduler='processes')
+	# dd.from_pandas(chunk['data'], npartitions=4).map_partitions(lambda df: df.apply(lambda row: json_normalize(json.loads(json.dumps(row))))).compute(scheduler='processes')
+
+	return json_normalize(dataframe['data'].apply(json.loads(json.dumps)))
+
+
+'''
+I was on to something with the usingPANDAS. With that one, I found that the reading in was NOT the problem, it was the calculations. I also know that for small chunks, the calculations can be done much faster. So why not combine that?
+	1) Read in with chunks like in usingPANDAS
+	2) For each chunk, run the process, THEN WRITE OUT TO A PANDAS csv
+	3) At the end, read in all of the csvs. (Or maybe just append to one csv )
+	4) Find the duplicates
+	5) DONE
+	
+	I could find the duplicates in each chunk, and in fact, that was my first thought, but that assumes that the json strings are sorted in a way that all of the repeats are near each other. More likely, the jsons are sorted by time or something, so there's no promise that I'll find all of the repeats. Better to just send out the whole chunk to file. 
+'''
+def readInOutIn(file):
+	chunks=[]
+	folder=path.join(getcwd(), "temp")
+	if not path.isdir(folder):
+		mkdir(folder)
+
+	timing.log("Starting reading-in")
+	reader=pd.read_json((file),lines=True, chunksize=100000, dtype=False)
+
+	timing.log("Starting chunk processing")
+	label=0 #for keeping track of the files. Could just do enumerate, but why get the length of reader? It could be huge. 
+	for chunk in reader:
+		new=chunk['data'].apply(json.dumps)
+		new=json_normalize(new.apply(json.loads))
+
+		for column in chunk.columns:
+			if "data" is not column:
+				new[column]=chunk[column]
+		del new['data'] #remove data now because dictionary screws things up later.
+
+		#NOW WRITE OUT!
+		timing.log("Writing csv chunk %s"%label)
+		new.to_csv(path.join(folder, "chunk_%s.csv"%label), chunksize=100000)
+		label+=1
+
+	timing.log("Reading back in!")
+	files=glob(path.join(folder, "*.csv"))
+	for f in files:
+		new=pd.read_csv(file)
+		chunks.append(new)
+
+	#now convert the list of dataframes certsDF=pd.concat(chunks, ignore_index=True, sort=True)into a single dataframe
+	certsDF=pd.concat(chunks, ignore_index=True, sort=True)
+
+	timing.log("finding dups")
+	dups=certsDF.duplicated(subset='leaf_cert.fingerprint')
+	dups=certsDF[dups]
+	timing.log("writing dups to file")
+	dups.to_csv("duplicates_readInOutIn.csv")
+
+
+
+
+
+
+
+
+
+
 def usingPANDAS(file):
 	#set the size of the information to process at any time, so we're not sending it to memory
 	chunks=[] #for storing all the chunks so that we can send them all to a merged dataframe later.
@@ -198,6 +349,7 @@ def usingPANDAS(file):
 			if "data" is not column:
 				new[column]=chunk[column]
 		del new['data'] #remove data now because dictionary screws things up later.
+
 		# print("type(new): ", type(new))
 		# print("data in set(new.columns): ", "data" in set(new.columns))
 		# print("chunk.keys: ", chunk.keys())
@@ -270,19 +422,19 @@ def usingPANDAS(file):
 	dups.to_csv("duplicates_PANDAS.csv")
 
 	'''
-	python -m timeit "from searchDuplicateCrts import usingPANDAS; usingPANDAS('/Users/esbailin/Desktop/recordedFuture/bailin/ctl_records_subsample')" --> 10377 rows
+	python -m timeit "from searchDuplicateCrts import usingPANDAS; usingPANDAS('/Users/esbailin/Desktop/future/bailin/ctl_records_subsample')" --> 10377 rows
 
 	Timeit for 100 chunks: 1 loop, best of 5: 6.7 sec per loop
 	Timeit for 1000 chunks: 1 loop, best of 5: 5.73 sec per loop
 	Timeit for 10000 chunks: 1 loop, best of 5: 5.85 sec per loop
 
-	python -m timeit "from searchDuplicateCrts import usingPANDAS; usingPANDAS('/Users/esbailin/Desktop/recordedFuture/bailin/subsample2.dms')" --> 22256
+	python -m timeit "from searchDuplicateCrts import usingPANDAS; usingPANDAS('/Users/esbailin/Desktop/future/bailin/subsample2.dms')" --> 22256
 	
 	Timeit for 1000 chunks: 1 loop, best of 5: 12.5 sec per loop
 	Timeit for 10000 chunks: 1 loop, best of 5: 13.1 sec per loop
 	Timeit for 100000 chunks: 1 loop, best of 5: 13.7 sec per loop
 
-	python -m timeit "from searchDuplicateCrts import usingPANDAS; usingPANDAS('/Users/esbailin/Desktop/recordedFuture/bailin/subsample3.dms')" --> 125225
+	python -m timeit "from searchDuplicateCrts import usingPANDAS; usingPANDAS('/Users/esbailin/Desktop/future/bailin/subsample3.dms')" --> 125225
 
 	Timeit for 1000 chunks: 1 loop, best of 5: 75.1 sec per loop
 	Timeit for 10000 chunks: 1 loop, best of 5: 71.2 sec per loop #HUGELY! BETTER THAN PREVIOUS METHODS!!!
