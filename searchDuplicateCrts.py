@@ -40,80 +40,128 @@ So The PLAN:
 	dups.write_csv()
 """
 import json
-import io
-import ijson.backends.yajl2 as ijson # WAY faster for importing and working with jsons (https://pypi.org/project/ijson/)
 import sys
+import timeit  # testing purposes
+import timing  # for complete script timings. Taken from an answer on stackoverflow years ago. NOT MINE
+import io.StringIO
+import dask.dataframe as dd
 import pandas as pd
-import timeit #testing purposes
-import timing #for complete script timings. Taken from an answer on stackoverflow years ago. NOT MINE
+import ijson.backends.yajl2 as ijson  # WAY faster for importing and working with jsons (https://pypi.org/project/ijson/)
+from glob import glob
+from os import path, getcwd, mkdir
+from pandas.io.json import json_normalize
+from io import StringIO
 
-'''
+# from multiprocessing import cpu_count, Queues #so I can tell how many partitions
+# import multiprocessing as mp
+# import pandas.util.testing as pdt #to confirm the multiprocessing worked
+
+metas = {
+    "cert_index": "int64",
+    "cert_link": "object",
+    "chain": "object",
+    "seen": "float64",
+    "update_type": "object",
+    "leaf_cert.all_domains": "object",
+    "leaf_cert.as_der": "object",
+    "leaf_cert.extensions.authorityInfoAccess": "object",
+    "leaf_cert.extensions.authorityKeyIdentifier": "object",
+    "leaf_cert.extensions.basicConstraints": "object",
+    "leaf_cert.extensions.certificatePolicies": "object",
+    "leaf_cert.extensions.ctlSignedCertificateTimestamp": "object",
+    "leaf_cert.extensions.extendedKeyUsage": "object",
+    "leaf_cert.extensions.keyUsage": "object",
+    "leaf_cert.extensions.subjectAltName": "object",
+    "leaf_cert.extensions.subjectKeyIdentifier": "object",
+    "leaf_cert.fingerprint": "object",
+    "leaf_cert.not_after": "int64",
+    "leaf_cert.not_before": "int64",
+    "leaf_cert.serial_number": "object",
+    "leaf_cert.subject.C": "object",
+    "leaf_cert.subject.CN": "object",
+    "leaf_cert.subject.L": "object",
+    "leaf_cert.subject.O": "object",
+    "leaf_cert.subject.OU": "object",
+    "leaf_cert.subject.ST": "object",
+    "leaf_cert.subject.aggregated": "object",
+    "source.name": "object",
+    "source.url": "object",
+    "leaf_cert.extensions.ctlPoisonByte": "bool",
+    "leaf_cert.extensions.crlDistributionPoints": "object",
+    "leaf_cert.extensions.extra": "object",
+    "leaf_cert.extensions.issuerAltName": "object",
+}
+
+"""
 HELPERS
-'''
-'''
+"""
+"""
 #Note: Found this on stackOverflow [https://stackoverflow.com/questions/25851183/how-to-compare-two-json-objects-with-the-same-elements-in-a-different-order-equa], accepted answer. Didn't want to reinvent the wheel... Renamed the function to fit with my naming scheme
 
 Recursive method to go through a dict and look for any lists. If a list is found, it is sorted. 
 Params:	an object
 Returns: the object, but with any lists sorted
-'''
+"""
+
+
 def sortDictLists(data):
-	if isinstance(data, dict):
-		return sorted((k, sortDictLists(v)) for k, v in data.items())
-	if isinstance(data, list):
-		return sorted(sortDictLists(x) for x in data)
-	else:
-		return data
+    if isinstance(data, dict):
+        return sorted((k, sortDictLists(v)) for k, v in data.items())
+    if isinstance(data, list):
+        return sorted(sortDictLists(x) for x in data)
+    else:
+        return data
 
-#Noted copied from https://stackoverflow.com/questions/24448543/how-would-i-flatten-a-nested-dictionary-in-python-3
+
+# Noted copied from https://stackoverflow.com/questions/24448543/how-would-i-flatten-a-nested-dictionary-in-python-3
 def flattenDict(current, key, result):
-	# print("type(current): ", type(current))
-	if isinstance(current, dict):
-		for k in current:
-			new_key = "{0}.{1}".format(key, k) if len(key) > 0 else k
-			flattenDict(current[k], new_key, result)
-	# if isinstance(current, list):
-	# 	flattenDict(sorted(x for x in current), key, result)
-	else:
-		result[key] = current
+    # print("type(current): ", type(current))
+    if isinstance(current, dict):
+        for k in current:
+            new_key = "{0}.{1}".format(key, k) if len(key) > 0 else k
+            flattenDict(current[k], new_key, result)
+    # if isinstance(current, list):
+    # 	flattenDict(sorted(x for x in current), key, result)
+    else:
+        result[key] = current
+    # print("result: ", result)
+    return result
 
-	# print("result: ", result)
-	return result
 
-
-'''
+"""
 Takes in a json and returns a sorted/organized dictionary
 Params: a json string
 Returns: an organized dictionary
-'''
-def prepRow(jsonStr):
-	# print(json.loads(jsonStr))
-	# print(type(json.loads(jsonStr)))
-	# return sortDictLists(json.loads(jsonStr[0]))
-	cert=flattenDict(json.loads(jsonStr), '', {})
-	cs={}
-	for c in jsonStr:
-		# print("c: ", c)
-		cs.update({c[0]: c[1]})
-	# print("*****type: ", type(cert))
-	# print("cert: ",cert)
-	# certs.append(cs)
-	return cs
+"""
 
-	# return flattenDict(ijson.parse(jsonStr), '', {})
+
+def prepRow(jsonStr):
+    # print(json.loads(jsonStr))
+    # print(type(json.loads(jsonStr)))
+    # return sortDictLists(json.loads(jsonStr[0]))
+    cs = {}
+    for c in jsonStr:
+        # print("c: ", c)
+        cs.update({c[0]: c[1]})
+    # print("*****type: ", type(cert))
+    # print("cert: ",cert)
+    # certs.append(cs)
+    return cs
+
+    # return flattenDict(ijson.parse(jsonStr), '', {})
+
 
 def main(argv):
-	file="/home/lnvp-linux-wkst1/Desktop/future/subsample3"
-	timing.log("Started V2")
-	usingJson_v2(file)
-	timing.endlog()
-	timing.log("Started v1")
-	usingJson(file)
-	print("done")
-	timing.endlog()
+    file = "/home/lnvp-linux-wkst1/Desktop/future/subsample3"
+    timing.log("Started V2")
+    usingJson_v2(file)
+    timing.endlog()
+    timing.log("Started v1")
+    usingJson(file)
+    print("done")
+    timing.endlog()
 
-
-	'''
+    """
 	#get file:
 	file=argv
 	file="/home/lnvp-linux-wkst1/Desktop/future/ctl_records_subsample"
@@ -137,8 +185,8 @@ def main(argv):
         	certs.append(cert)
 	        cursor += len(line)
 
-	'''
-	'''
+	"""
+    """
 	with open(file, "r") as f:
 		for line in f:
 			# print(line)
@@ -155,8 +203,8 @@ def main(argv):
 			# print("cert: ",cert)
 			# certs.append(cs)
 			certs.append(cert)
-	'''
-	'''
+	"""
+    """
 
 	certsDF=pd.DataFrame(certs)
 	print("dim(certsDF): ", certsDF.shape)
@@ -167,124 +215,408 @@ def main(argv):
 	dups=certsDF.duplicated(subset='data.leaf_cert.fingerprint')
 	dups=certsDF[dups]
 	print(dups)
-	'''
+
+	"""
+
+
+"""
+'''
+With dask proving to be just too much work to get working in such a short time, I'm going to try readInOutIn with multiprocessing
+
+Plan: read in with Pandas and chunks --> put the chunks into a queue (or the like)--> have workers do the normalizing --> create a new dataframe at the end
+'''
+#THIS IS MODIFIED FROM https://stackoverflow.com/questions/26784164/pandas-multiprocessing-apply
+def process_apply(x):
+	# new=x['data'].apply(json.dumps)
+	# new=json_normalize(new.apply(json.loads))
+	if x == "data":
+		return json_normalize(json.loads(json.dumps(x)))
+	return x
+
+def process(df):
+	return df.apply(process_apply, axis=1)
+
+def usingMultiProces(file):
+	#read in with pandas
+	readers=pd.read_json((file),lines=True, chunksize=100000, dtype=False)
+	q=Queue(100) #max size?
+	for reader in readers:
+		q.put(reader)
+
+"""
+
+"""
+As I was thinking about getting readInOutIn to work, it hit me that I've been thinking about this a consecutive manner. There's only so far I can go with it. I need to think about serializing, ergo, THREADING! 
+	
+I know that reading in a file shouldn't be threaded, but given that that's not the part that takes forever (based on my previous attempts). That part is the processing the chunks (i.e. the normalizing) portion. So I can thread that. 
+
+Just as I was about to add threading to my usingPANDAS framework, I decided to google adding threading to PANDAS. This lead to DASK! Rather than reinventing the wheel, I'm using it. https://docs.dask.org/en/latest/dataframe-api.html
+
+"""
+
+
+def usingDASK(file):
+    chunks = []
+    timing.log("Starting reading-in")
+
+    reader = dd.read_json(
+        file,
+        lines=True,
+        blocksize=2 ** 28,
+        meta={"data": object, "message_type": object},
+    )
+    # t=reader['data'].map_partitions(lambda df: df.apply(lambda x: x.apply(flattenDict, key='', result={}))).to_bag()
+    # t=reader.map_partitions(lambda df: df['data'].apply(flattenDict, key='', result={})).to_bag()
+    datas = (
+        reader["data"]
+        .map_partitions(lambda df: df.apply((lambda row: flattenDict(row, "", {}))))
+        .to_bag()
+    )
+    new = datas.to_dataframe()
+    new["message_type"] = reader["message_type"]
+    new = new.compute()
+    dups = new.duplicated(subset="leaf_cert.fingerprint")
+    dups = new[dups]
+    dups.to_csv("duplicates_DASK.csv")
+
+    """
+	python -m timeit "from searchDuplicateCrts import usingDASK; usingDASK('/Users/esbailin/Desktop/future/bailin/subsample2.dms')"
+	
+	Timeit for blocksize: 2**28: 1 loop, best of 5: 10.9 sec per loop
+	Timeit for blocksize: 2**30: 1 loop, best of 5: 12.1 sec per loop (2**30 is my psutil.virtual_memory().total / psutil.cpu_count())
+
+	python -m timeit "from searchDuplicateCrts import usingDASK; usingDASK('/Users/esbailin/Desktop/future/bailin/subsample3.dms')"
+
+	Timeit for blocksize: 2**30: That was a mistake. It's definitely too big! 
+
+
+	"""
+
+
+def normalizeColumns(series):
+    new = series.map_partitions(apply(json_dumps))
+    new.map_partitions(apply(json_loads))
+    return new.map_partitions(apply(json_normalize))
+    # new=data.apply(json.dumps)
+    # temp=json.dumps(data)
+    # temp=json.loads(temp)
+    # temp=json_normalize(temp)
+    # return temp
+    # new=dataframe['data'].apply(json.dumps)
+    # dd.from_pandas(dataframe['data']).map_partitions(lambda df: df.apply(json.dumps)).compute(scheduler='processes')
+    # dd.from_pandas(chunk['data'], npartitions=4).map_partitions(lambda df: df.apply(lambda row: json_normalize(json.loads(json.dumps(row))))).compute(scheduler='processes')
+
+    return json_normalize(dataframe["data"].apply(json.loads(json.dumps)))
+
+
+"""
+I was on to something with the usingPANDAS. With that one, I found that the reading in was NOT the problem, it was the calculations. I also know that for small chunks, the calculations can be done much faster. So why not combine that?
+	1) Read in with chunks like in usingPANDAS
+	2) For each chunk, run the process, THEN WRITE OUT TO A PANDAS csv
+	3) At the end, read in all of the csvs. (Or maybe just append to one csv )
+	4) Find the duplicates
+	5) DONE
+	
+	I could find the duplicates in each chunk, and in fact, that was my first thought, but that assumes that the json strings are sorted in a way that all of the repeats are near each other. More likely, the jsons are sorted by time or something, so there's no promise that I'll find all of the repeats. Better to just send out the whole chunk to file. 
+"""
+
+
+def readInOutIn(file):
+    chunks = []
+    folder = path.join(getcwd(), "temp")
+    if not path.isdir(folder):
+        mkdir(folder)
+
+    timing.log("Starting reading-in")
+    reader = pd.read_json((file), lines=True, chunksize=100000, dtype=False)
+
+    timing.log("Starting chunk processing")
+    label = (
+        0
+    )  # for keeping track of the files. Could just do enumerate, but why get the length of reader? It could be huge.
+    for chunk in reader:
+        new = chunk["data"].apply(json.dumps)
+        new = json_normalize(new.apply(json.loads))
+
+        for column in chunk.columns:
+            if "data" != column:
+                new[column] = chunk[column]
+        del new["data"]  # remove data now because dictionary screws things up later.
+
+        # NOW WRITE OUT!
+        timing.log("Writing csv chunk %s" % label)
+        new.to_csv(path.join(folder, "chunk_%s.csv" % label), chunksize=100000)
+        label += 1
+
+    timing.log("Reading back in!")
+    files = glob(path.join(folder, "*.csv"))
+    for f in files:
+        new = pd.read_csv(file)
+        chunks.append(new)
+
+    # now convert the list of dataframes certsDF=pd.concat(chunks, ignore_index=True, sort=True)into a single dataframe
+    certsDF = pd.concat(chunks, ignore_index=True, sort=True)
+
+    timing.log("finding dups")
+    dups = certsDF.duplicated(subset="leaf_cert.fingerprint")
+    dups = certsDF[dups]
+    timing.log("writing dups to file")
+    dups.to_csv("duplicates_readInOutIn.csv")
+
+
+def usingPANDAS(file):
+    # set the size of the information to process at any time, so we're not sending it to memory
+    chunks = (
+        []
+    )  # for storing all the chunks so that we can send them all to a merged dataframe later.
+
+    # PANDAS has a jsonreader that works with chunks! AND it works well with line-delimitors
+    timing.log("Starting reading-in")
+    reader = pd.read_json(
+        (file), lines=True, chunksize=100000, dtype=False
+    )  # so it doesn't infer the type?
+    # print(reader)
+    # chunks=(flattenDict(chunk.to_dict(), "",{}) for chunk in reader)
+    # chunks=[chunk for chunk in reader]
+    # certs.append([pd.DataFrame(json_normalize(x)) for x in chunks['data']])
+    # certs.append([pd.DataFrame(json_normalize(x)) for x in chunk['data'] for chunk in reader])
+    # certsDF = pd.concat([pd.DataFrame(json_normalize(x)) for x in chunk['data']],ignore_index=True)
+    timing.log("Starting chunk processing")
+    for chunk in reader:
+        # print(chunk)
+        # columns=chunk.columns
+        new = chunk["data"].apply(json.dumps)
+        new = json_normalize(new.apply(json.loads))
+        # new=chunk['data'].apply(flattenDict, args={'',{}})
+        # print("new: \n", new)
+        # chunk=pd.concat([chunk, new], axis=1)#.to_dict()
+        # chunk.merge(new, how="outer")
+        # chunk=chunk.update(new)
+        for column in chunk.columns:
+            if "data" != column:
+                new[column] = chunk[column]
+        del new["data"]  # remove data now because dictionary screws things up later.
+
+        # print("type(new): ", type(new))
+        # print("data in set(new.columns): ", "data" in set(new.columns))
+        # print("chunk.keys: ", chunk.keys())
+        # print("chunk.columns: ", chunk.columns)
+        # print("chunk: ", chunk)
+        # print("new: ", new)
+        # print("new.columns: ", new.columns)
+        # for column in columns:
+        # 	# chunk[column]=eval('json_normalize(chunk.{}.apply(json.loads))'.format(column))
+        # 	# chunk.merge(chunk, eval('json_normalize(chunk.{}.apply(json.loads))'.format(column)))
+        # 	# print(type(chunk[column]))
+        # 	# if isinstance(chunk[column], dict):
+        # 	# 	new=pd.Dataframe(chunk[column])
+        # 	# 	chunk=pd.concat([chunk, new], axis=1)
+        # 	# 	print("chunk columns: ", chunk.columns)
+        # 	# try:
+        # 	# print(type(chunk[column]))
+        # 	# print(chunk[column])
+        # 	# # print(chunk[column].to_dict().keys())
+        # 	# # raise("break")
+        # 	# new=pd.DataFrame(chunk[column].values)#to_dict())
+        # 	# # print(new.columns)
+        # 	# chunk=pd.concat([chunk, new], axis=1)
+        # 	# print("chunk columns: ", chunk.columns)
+
+        # 	# new=pd.value_counts(chunk[column])
+        # 	new=chunk[column].apply(pd.DataFrame.from_dict)
+        # 	print("new: ", new)
+        # 	chunk=pd.concat([chunk, new], axis=1)
+
+        # 	# except:
+        # 		# raise(Error)
+
+        # chunks.append(chunk)
+        # print("new: \n", new )
+        # new.to_csv("temp_new.csv")
+        chunks.append(new)
+        # timing.log("just finish a loop") #THIS SHOWS IT TAKES ~.06seconds to run a loop.
+
+        # certs=[pd.concat([pd.DataFrame(json_normalize(x)) for x in chunk['data']])]
+        # print(chunk)
+        # chunks.append(chunk)
+        # chunks.append(certs)
+    # print(certs[1])
+
+    """		
+	NEW plan. Clearly the chunking is a good idea, but we still have to deal with the json strings. So let's try to normalize those AFTER. If the column contains strings that are valid jsons, convert them.
+	Nope. Not working. We can't treat them like jsons, because they're going in as dictionaries. They're not acting like dictionaries, though. The data column is a series. I want to be able to extract the dictionaries and then attach them to the rest of the dataframe, so we preserve any columns that aren't the 'data'. 
+	"""
+
+    # now make a major dataframe
+    # certsDF=reduce(lambda x, y: pd.merge(x, y), chunks)
+    # print(type(chunks))
+    # print(len(chunks))
+    # print("data in set(new.columns): ", "data" in set(new.columns))
+    # print("set(new.columns): ", set(new.columns))
+    # certsDF=pd.DataFrame(chunks)
+    timing.log("Starting Concat")
+    certsDF = pd.concat(chunks, ignore_index=True, sort=True)
+    # certsDF=reduce(lambda x, y: pd.merge(x, y), chunks)
+    # print(certsDF.shape)
+    # certsDF=pd.DataFrame(certs)
+    # print(certsDF.columns)
+    timing.log("finding dups")
+    dups = certsDF.duplicated(subset="leaf_cert.fingerprint")
+    dups = certsDF[dups]
+    timing.log("writing dups to file")
+    dups.to_csv("duplicates_PANDAS.csv")
+
+    """
+	python -m timeit "from searchDuplicateCrts import usingPANDAS; usingPANDAS('/Users/esbailin/Desktop/future/bailin/ctl_records_subsample')" --> 10377 rows
+
+	Timeit for 100 chunks: 1 loop, best of 5: 6.7 sec per loop
+	Timeit for 1000 chunks: 1 loop, best of 5: 5.73 sec per loop
+	Timeit for 10000 chunks: 1 loop, best of 5: 5.85 sec per loop
+
+	python -m timeit "from searchDuplicateCrts import usingPANDAS; usingPANDAS('/Users/esbailin/Desktop/future/bailin/subsample2.dms')" --> 22256
+	
+	Timeit for 1000 chunks: 1 loop, best of 5: 12.5 sec per loop
+	Timeit for 10000 chunks: 1 loop, best of 5: 13.1 sec per loop
+	Timeit for 100000 chunks: 1 loop, best of 5: 13.7 sec per loop
+
+	python -m timeit "from searchDuplicateCrts import usingPANDAS; usingPANDAS('/Users/esbailin/Desktop/future/bailin/subsample3.dms')" --> 125225
+
+	Timeit for 1000 chunks: 1 loop, best of 5: 75.1 sec per loop
+	Timeit for 10000 chunks: 1 loop, best of 5: 71.2 sec per loop #HUGELY! BETTER THAN PREVIOUS METHODS!!!
+	Timeit for 100000 chunks: 1 loop, best of 5: 94.2 sec per loop #So clearly, less than 100000
+
+	:::> With these results, it seems that 100000 is sufficient for the huge file, FOR now. I should run timeits on the huge file, but I don't know if I have time for that. I'll just use the embedded timing method to calculate how long it takes to run the big one. Here's to hoping for less than 2hours! 
+	"""
 
 
 def usingIjson(file):
-	# file="/home/lnvp-linux-wkst1/Desktop/future/ctl_records_subsample"
+    # file="/home/lnvp-linux-wkst1/Desktop/future/ctl_records_subsample"
 
-	certs=[] # for holding all of the ordered data
-	#from https://stackoverflow.com/questions/37200302/using-python-ijson-to-read-a-large-json-file-with-multiple-json-objects
-	with open(file, encoding="UTF-8") as json_file:
-	    # cursor = 0
-	    for line_number, line in enumerate(json_file):
-	    # for line in enumerate(json_file):
-	        # print ("Processing line", line_number + 1,"at cursor index:", cursor)
-	        line_as_file = io.StringIO(line)
-	        # Use a new parser for each line
-	        json_parser = ijson.parse(line_as_file)
-	        cert={}
-	        # print("json_parser: ", json_parser)
-	        for prefix, kind, value in json_parser:
-	            # print ("prefix=",prefix, "type=",kind, "value=",value)
-	            if "string" is kind:
-	            	cert.update({prefix:value})
-        	certs.append(cert)
-	        # cursor += len(line)
+    certs = []  # for holding all of the ordered data
+    # from https://stackoverflow.com/questions/37200302/using-python-ijson-to-read-a-large-json-file-with-multiple-json-objects
+    with open(file, encoding="UTF-8") as json_file:
+        # cursor = 0
+        for line_number, line in enumerate(json_file):
+            # for line in enumerate(json_file):
+            # print ("Processing line", line_number + 1,"at cursor index:", cursor)
+            line_as_file = io.StringIO(line)
+            # Use a new parser for each line
+            json_parser = ijson.parse(line_as_file)
+            cert = {}
+            # print("json_parser: ", json_parser)
+            for prefix, kind, value in json_parser:
+                # print ("prefix=",prefix, "type=",kind, "value=",value)
+                if "string" == kind:
+                    cert.update({prefix: value})
+            certs.append(cert)
+            # cursor += len(line)
 
-	certsDF=pd.DataFrame(certs)
-	# print("dim(certsDF): ", certsDF.shape)
-	# print("data.columns: ", certsDF.columns)
-	# certsDF.to_csv("subsample_ijson_pd.csv")
+    certsDF = pd.DataFrame(certs)
+    # print("dim(certsDF): ", certsDF.shape)
+    # print("data.columns: ", certsDF.columns)
+    # certsDF.to_csv("subsample_ijson_pd.csv")
 
-	# print()
-	dups=certsDF.duplicated(subset='data.leaf_cert.fingerprint')
-	dups=certsDF[dups]
-	# print(dups)
-	# dups.to_csv("subsample_ijson_DUPS.csv")
+    # print()
+    dups = certsDF.duplicated(subset="data.leaf_cert.fingerprint")
+    dups = certsDF[dups]
+    # print(dups)
+    # dups.to_csv("subsample_ijson_DUPS.csv")
+
 
 def usingJson(file):
-	#get file:
-	# file="/home/lnvp-linux-wkst1/Desktop/future/ctl_records_subsample"
+    # get file:
+    # file="/home/lnvp-linux-wkst1/Desktop/future/ctl_records_subsample"
 
-	certs=[] # for holding all of the ordered data
-	with open(file, "r") as f:
-		for line in f:
-			# print(line)
-			# cert=sortDictLists(prepRow(line))#, '', {})
-			cert=flattenDict(json.loads(line), '', {})#, '', {})
+    certs = []  # for holding all of the ordered data
+    with open(file, "r") as f:
+        for line in f:
+            # print(line)
+            # cert=sortDictLists(prepRow(line))#, '', {})
+            cert = flattenDict(json.loads(line), "", {})  # , '', {})
 
-			#we need to put the strings from sortDict back into dicts. 
-			#MAYBE THIS ISN'T NECESSARY?!
-			cs={}
-			for c in cert:
-				# print("c: ", c)
-				cs.update({c[0]: c[1]})
-			# print("*****type: ", type(cert))
-			# print("cert: ",cert)
-			# certs.append(cs)
-			certs.append(cert)
+            # we need to put the strings from sortDict back into dicts.
+            # MAYBE THIS ISN'T NECESSARY?!
+            cs = {}
+            for c in cert:
+                # print("c: ", c)
+                cs.update({c[0]: c[1]})
+            # print("*****type: ", type(cert))
+            # print("cert: ",cert)
+            # certs.append(cs)
+            certs.append(cert)
 
-	certsDF=pd.DataFrame(certs)
-	# print("dim(certsDF): ", certsDF.shape)
-	# print("data.columns: ", certsDF.columns)
-	# certsDF.to_csv("subsample_ijson_pd.csv")
+    certsDF = pd.DataFrame(certs)
+    # print("dim(certsDF): ", certsDF.shape)
+    # print("data.columns: ", certsDF.columns)
+    # certsDF.to_csv("subsample_ijson_pd.csv")
 
-	# print()
-	dups=certsDF.duplicated(subset='data.leaf_cert.fingerprint')
-	dups=certsDF[dups]
-	# print(dups)
-	# dups.to_csv("subsample_json_DUPS.csv")
+    # print()
+    dups = certsDF.duplicated(subset="data.leaf_cert.fingerprint")
+    dups = certsDF[dups]
+    # print(dups)
+    # dups.to_csv("subsample_json_DUPS.csv")
+
 
 def usingJson_v2(file):
-	#get file:
-	# file="/home/lnvp-linux-wkst1/Desktop/future/ctl_records_subsample"
+    # get file:
+    # file="/home/lnvp-linux-wkst1/Desktop/future/ctl_records_subsample"
 
-	# certs=[] # for holding all of the ordered data
-	cs=[]
-	with open(file, "rb") as f:
-		certs=(json.loads(line) for line in f) #make generator, don't store in memory directly. 
-	
-		for cert in certs:
-			cert=flattenDict(cert, '', {})
-			cs.append(cert)
+    # certs=[] # for holding all of the ordered data
+    cs = []
+    with open(file, "rb") as f:
+        certs = (
+            json.loads(line) for line in f
+        )  # make generator, don't store in memory directly.
 
-	# certsDF=pd.DataFrame(certs)
-	certsDF=pd.DataFrame(cs) 
+        for cert in certs:
+            cert = flattenDict(cert, "", {})
+            cs.append(cert)
 
-	# print("dim(certsDF): ", certsDF.shape)
-	# print("data.columns: ", certsDF.columns)
-	# certsDF.to_csv("subsample_ijson_pd.csv")
+    # certsDF=pd.DataFrame(certs)
+    certsDF = pd.DataFrame(cs)
 
-	# print()
-	dups=certsDF.duplicated(subset='data.leaf_cert.fingerprint')
-	dups=certsDF[dups]
-	# print(dups)
-	# dups.to_csv("subsample_json_DUPS.csv")
-	dups.to_csv("duplicates.csv")
+    # print("dim(certsDF): ", certsDF.shape)
+    # print("data.columns: ", certsDF.columns)
+    # certsDF.to_csv("subsample_ijson_pd.csv")
 
-'''
+    # print()
+    dups = certsDF.duplicated(subset="data.leaf_cert.fingerprint")
+    dups = certsDF[dups]
+    # print(dups)
+    # dups.to_csv("subsample_json_DUPS.csv")
+    dups.to_csv("duplicates.csv")
+
+
+"""
 Confirm ijson is worth it
-'''
+"""
+
+
 def timeMethods():
-	setup="from searchDuplicateCrts import usingJson, usingIjson, usingJson_v2"
+    setup = "from searchDuplicateCrts import usingJson, usingIjson, usingJson_v2"
 
-	# file="/home/lnvp-linux-wkst1/Desktop/future/ctl_records_subsample"
-	# # print("usingIjson (sample1): ", timeit.timeit(setup=setup, stmt='usingIjson("{}")'.format(file), number=10))
-	# print("usingJson (sample1): ", timeit.timeit(setup=setup, stmt='usingJson("{}")'.format(file), number=10))
-	# print("usingJson_v2 (sample1): ", timeit.timeit(setup=setup, stmt='usingJson_v2("{}")'.format(file), number=10))
+    # file="/home/lnvp-linux-wkst1/Desktop/future/ctl_records_subsample"
+    # # print("usingIjson (sample1): ", timeit.timeit(setup=setup, stmt='usingIjson("{}")'.format(file), number=10))
+    # print("usingJson (sample1): ", timeit.timeit(setup=setup, stmt='usingJson("{}")'.format(file), number=10))
+    # print("usingJson_v2 (sample1): ", timeit.timeit(setup=setup, stmt='usingJson_v2("{}")'.format(file), number=10))
 
-	# file="/home/lnvp-linux-wkst1/Desktop/future/subsample2"
-	# # print("usingIjson (sample2): ", timeit.timeit(setup=setup, stmt='usingIjson("{}")'.format(file), number=10))
-	# print("usingJson (sample2): ", timeit.timeit(setup=setup, stmt='usingJson("{}")'.format(file), number=10))
-	# print("usingJson_v2 (sample2): ", timeit.timeit(setup=setup, stmt='usingJson_v2("{}")'.format(file), number=10))
+    # file="/home/lnvp-linux-wkst1/Desktop/future/subsample2"
+    # # print("usingIjson (sample2): ", timeit.timeit(setup=setup, stmt='usingIjson("{}")'.format(file), number=10))
+    # print("usingJson (sample2): ", timeit.timeit(setup=setup, stmt='usingJson("{}")'.format(file), number=10))
+    # print("usingJson_v2 (sample2): ", timeit.timeit(setup=setup, stmt='usingJson_v2("{}")'.format(file), number=10))
 
-	file="/home/lnvp-linux-wkst1/Desktop/future/subsample3"
-	# print("usingIjson (sample3): ", timeit.timeit(setup=setup, stmt='usingIjson("{}")'.format(file), number=10))
-	print("usingJson (sample3): ", timeit.timeit(setup=setup, stmt='usingJson("{}")'.format(file), number=3))
-	print("usingJson_v2 (sample3): ", timeit.timeit(setup=setup, stmt='usingJson_v2("{}")'.format(file), number=3))
+    file = "/home/lnvp-linux-wkst1/Desktop/future/subsample3"
+    # print("usingIjson (sample3): ", timeit.timeit(setup=setup, stmt='usingIjson("{}")'.format(file), number=10))
+    print(
+        "usingJson (sample3): ",
+        timeit.timeit(setup=setup, stmt='usingJson("{}")'.format(file), number=3),
+    )
+    print(
+        "usingJson_v2 (sample3): ",
+        timeit.timeit(setup=setup, stmt='usingJson_v2("{}")'.format(file), number=3),
+    )
 
-	'''
+    """
 	#RESULTS OF FIRST RUN:
 	usingIjson (sample1):  35.64337776298635
 	usingJson (sample1):  8.808945185039192
@@ -294,8 +626,8 @@ def timeMethods():
 	usingJson (sample3):  114.13637442095205
 	usingIjson (sample1):  37.192120782099664
 	usingJson (sample1):  8.95059080189094
-	'''
-	'''
+	"""
+    """
 	#RESULTS OF SECOND TEST
 	python -m timeit 'from searchDuplicateCrts import timeMethods; timeMethods()'
 	usingJson (sample1):  9.268286403967068
@@ -541,18 +873,8 @@ def timeMethods():
 	10 loops, best of 3: 274 sec per loop
 	
 	#Seems like usingJson_v2 wins for the larger files. It's the one that is creating a lazy generator instead of reading in to memory.  
-	'''
+	"""
 
 
-
-if __name__=="__main__": 
-    main(sys.argv[1:]) #take all the arguments after the name of the script
-
-
-
-
-
-
-
-
-
+if __name__ == "__main__":
+    main(sys.argv[1:])  # take all the arguments after the name of the script
