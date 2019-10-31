@@ -9,6 +9,7 @@ import sys
 import timeit  # testing purposes
 import timing  # for complete script timings. Taken from an answer on stackoverflow years ago. NOT MINE
 <<<<<<< HEAD
+<<<<<<< HEAD
 import dask.delayed as dl
 import dask.dataframe as dd
 import pandas as pd
@@ -25,11 +26,16 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.ext.automap import automap_base
 =======
+=======
+>>>>>>> 315182e645bb7447bdc4375487f4aa133cd2b7bf
 import dask.dataframe as dd
 from dask.distributed import Client
 import pandas as pd
 from os import path, getcwd, mkdir
 from pandas.io.json import json_normalize
+<<<<<<< HEAD
+>>>>>>> 315182e645bb7447bdc4375487f4aa133cd2b7bf
+=======
 >>>>>>> 315182e645bb7447bdc4375487f4aa133cd2b7bf
 
 """
@@ -86,6 +92,7 @@ def usingDASKClient(file):
 That's a no-go for the client. It keeps running out of memory. I don't think this computer has enough spare memory to split. So let's move to a completely different foot. Let's try mysql loading.
 """
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 """
 With this attempt, I'm going to try to read everything in with dask and send it chunk-wise into MySQL.
@@ -317,6 +324,8 @@ def usingMySQL(file):
 
 
 
+=======
+>>>>>>> 315182e645bb7447bdc4375487f4aa133cd2b7bf
 =======
 >>>>>>> 315182e645bb7447bdc4375487f4aa133cd2b7bf
 
