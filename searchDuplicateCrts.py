@@ -1,7 +1,10 @@
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
 <<<<<<< HEAD
+>>>>>>> 315182e645bb7447bdc4375487f4aa133cd2b7bf
+=======
 >>>>>>> 315182e645bb7447bdc4375487f4aa133cd2b7bf
 #!/usr/bin/env python3
 
@@ -884,6 +887,7 @@ def timeMethods():
 if __name__ == "__main__":
     main(sys.argv[1:])  # take all the arguments after the name of the script
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
 =======
 >>>>>>> 315182e645bb7447bdc4375487f4aa133cd2b7bf
@@ -1727,6 +1731,8 @@ if __name__ == "__main__":
     main(sys.argv[1:])  # take all the arguments after the name of the script
 >>>>>>> 315182e645bb7447bdc4375487f4aa133cd2b7bf
 =======
+>>>>>>> 315182e645bb7447bdc4375487f4aa133cd2b7bf
+=======
 #!/usr/bin/env python3
 
 """
@@ -2561,6 +2567,9 @@ if __name__=="__main__":
 
 >>>>>>> 3bbe0ca6a2b8f22361284e062567fb2e0b26b141
 <<<<<<< HEAD
+<<<<<<< HEAD
+>>>>>>> 315182e645bb7447bdc4375487f4aa133cd2b7bf
+=======
 >>>>>>> 315182e645bb7447bdc4375487f4aa133cd2b7bf
 =======
 >>>>>>> 315182e645bb7447bdc4375487f4aa133cd2b7bf
